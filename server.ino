@@ -1,13 +1,16 @@
+
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <time.h>
 #include <string.h> 
 #include "mbedtls/sha256.h"
 
-const char* WIFI_SSID = "Dartmouth Public"; 
+const char* AP_SSID = "ESP32_AP"; 
+const char* AP_PASS = "12345678";
+
 const int UDP_PORT = 12345;
-const uint8_t SHARED_SECRET_KEY[] = "128bitSecretKey!"; 
-const size_t KEY_LEN = 16;
+const uint8_t SHARED_SECRET_KEY[] = "cosc160"; 
+const size_t KEY_LEN = 7;
 const size_t HMAC_TAG_LEN = 1; 
 const size_t SHA256_OUTPUT_LEN = 32;
 const char REQUEST_FLAG[] = "REQUESTSYNC"; 
@@ -90,36 +93,36 @@ bool validate_packet(const uint8_t* packet) {
 
 void setup() {
     Serial.begin(115200);
+    delay(1000);
 
-    Serial.print("Connecting to open SSID: ");
-    Serial.println(WIFI_SSID);
+    Serial.println();
+    Serial.println("Configuring ESP32 as Wi-Fi Access Point...");
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID);
+    WiFi.mode(WIFI_AP);
 
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+    bool apStarted = WiFi.softAP(AP_SSID, AP_PASS);
+
+    if (!apStarted) {
+        Serial.println("ERROR: Failed to start Access Point!");
+        while (true) {
+            delay(1000);
+        }
     }
 
-    Serial.println("\nWi-Fi Connected.");
-    Serial.print("Server IP Address: ");
-    Serial.println(WiFi.localIP());
+    IPAddress apIP = WiFi.softAPIP();
+    Serial.println("Access Point started.");
+    Serial.print("AP SSID: ");
+    Serial.println(AP_SSID);
+    Serial.print("AP IP Address: ");
+    Serial.println(apIP);
 
+    // Start UDP server on this port
     Udp.begin(UDP_PORT);
     Serial.print("Listening on UDP Port: ");
     Serial.println(UDP_PORT);
 }
 
 void loop() {
-    
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Lost Wi-Fi connection, attempting reconnect...");
-        WiFi.begin(WIFI_SSID);
-        delay(5000); 
-        return;
-    }
-
     // Check for incoming packets
     int packetSize = Udp.parsePacket();
 
@@ -163,7 +166,7 @@ void loop() {
             
             // Copy header and sequence number
             memcpy(replyPayload.header, REQUEST_FLAG, HEADER_FLAG_LEN);
-            replyPayload.seq_num = requestPayload.seq_num;
+            replyPayload.seq_num = requestPayload.seq_num + 1;
             
             // Fill timestamps
             replyPayload.T1 = requestPayload.T1; // Original T1 from client
