@@ -4,17 +4,38 @@
 #include <sys/time.h> 
 #include <string.h>   
 #include "mbedtls/sha256.h"
+#include "esp_system.h"
 
 const char* WIFI_SSID = "ESP32_AP"; 
 const char* PASSPHRASE = "12345678";
 const char* SERVER_IP_STR = "192.168.4.1"; 
-const int UDP_PORT = 12345; 
+const int UDP_PORT = 12345;
+
 const long SYNC_INTERVAL_MS = 10000; 
-const int UDP_TIMEOUT_MS = 10; 
-const uint8_t SHARED_SECRET_KEY[] = "cosc160"; 
-const size_t KEY_LEN = 7;
+const int UDP_TIMEOUT_MS = 10;
+const int  HS_TIMEOUT_MS    = 1000;
+
+const uint8_t ROOT_KEY[]   = "cosc160"; 
+const size_t  ROOT_KEY_LEN = 7;
+
 const size_t HMAC_TAG_LEN = 1; 
 const size_t SHA256_OUTPUT_LEN = 32;
+const size_t SHA256_BLOCK_SIZE  = 64;
+
+// Session key (derived from handshake nonces)
+uint8_t SESSION_KEY[SHA256_OUTPUT_LEN];
+size_t  SESSION_KEY_LEN  = 16;   // first 16 bytes of SHA-256
+bool    sessionKeyReady  = false;
+
+// Roles
+enum DeviceRole : uint8_t {
+    ROLE_CLIENT = 0,
+    ROLE_SERVER = 1
+};
+
+DeviceRole localRole  = ROLE_CLIENT;    // this device
+DeviceRole remoteRole = ROLE_SERVER;    // time master (server)
+bool handshakeComplete = false;
 
 const char REQUEST_FLAG[] = "REQUESTSYNC";
 const size_t HEADER_FLAG_LEN = 12;
@@ -34,7 +55,6 @@ struct __attribute__((packed)) PacketPayload {
 
 const size_t PAYLOAD_SIZE = sizeof(PacketPayload);
 const size_t PACKET_SIZE = PAYLOAD_SIZE + HMAC_TAG_LEN; 
-const size_t SHA256_BLOCK_SIZE = 64; 
 
 uint64_t get_high_res_time() {
     return esp_timer_get_time();
@@ -73,6 +93,29 @@ void hmac_sha256_custom(const uint8_t* key, size_t keyLen, const uint8_t* msg, s
     mbedtls_sha256_update(&ctx, innerHash, SHA256_OUTPUT_LEN);
     mbedtls_sha256_finish(&ctx, hmacResult);
     mbedtls_sha256_free(&ctx);
+}
+
+// Session key derivation
+void derive_session_key(uint32_t clientNonce, uint32_t serverNonce) {
+    // material = ROOT_KEY || clientNonce || serverNonce
+    uint8_t material[ROOT_KEY_LEN + sizeof(clientNonce) + sizeof(serverNonce)];
+    memcpy(material, ROOT_KEY, ROOT_KEY_LEN);
+    memcpy(material + ROOT_KEY_LEN, &clientNonce, sizeof(clientNonce));
+    memcpy(material + ROOT_KEY_LEN + sizeof(clientNonce), &serverNonce, sizeof(serverNonce));
+
+    uint8_t fullHash[SHA256_OUTPUT_LEN];
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha256_update(&ctx, material, sizeof(material));
+    mbedtls_sha256_finish(&ctx, fullHash);
+    mbedtls_sha256_free(&ctx);
+
+    memcpy(SESSION_KEY, fullHash, SESSION_KEY_LEN);
+    sessionKeyReady = true;
+
+    Serial.print("Session key derived. First byte: 0x");
+    Serial.println(SESSION_KEY[0], HEX);
 }
 
 uint8_t calculate_hmac_tag(const uint8_t* payload, size_t payloadLen) {
@@ -269,14 +312,107 @@ bool receive_reply(uint32_t expected_seq, uint64_t& T1_out, uint64_t& T2_out, ui
     return false;
 }
 
+// Handshake from client side
+bool performHandshake() {
+    Serial.println("Starting handshake (HS_INIT -> HS_RESP)...");
+
+    uint32_t clientNonce = esp_random();  // 32-bit random value
+
+    // Build HS_INIT payload
+    HandshakeInitPayload initPayload;
+    memset(&initPayload, 0, sizeof(initPayload));
+    memcpy(initPayload.header, HS_INIT_FLAG, strlen(HS_INIT_FLAG));
+    initPayload.clientNonce = clientNonce;
+
+    uint8_t initPacket[HS_INIT_PACKET_SIZE];
+    memcpy(initPacket, &initPayload, HS_INIT_PAYLOAD_SIZE);
+
+    // HMAC over HS_INIT using ROOT_KEY
+    uint8_t initHmac[SHA256_OUTPUT_LEN];
+    hmac_sha256_custom(ROOT_KEY, ROOT_KEY_LEN,
+                       (uint8_t*)&initPayload, HS_INIT_PAYLOAD_SIZE,
+                       initHmac);
+    initPacket[HS_INIT_PAYLOAD_SIZE] = initHmac[0];
+
+    // Send HS_INIT
+    if (Udp.beginPacket(SERVER_IP, UDP_PORT) == 0) {
+        Serial.println("Handshake: beginPacket failed.");
+        return false;
+    }
+    size_t written = Udp.write(initPacket, HS_INIT_PACKET_SIZE);
+    int endStatus  = Udp.endPacket();
+
+    if (endStatus != 1 || written != HS_INIT_PACKET_SIZE) {
+        Serial.println("Handshake: failed to send HS_INIT.");
+        return false;
+    }
+
+    // Wait for HS_RESP
+    unsigned long start = millis();
+    while (millis() - start < (unsigned long)HS_TIMEOUT_MS) {
+        int packetSize = Udp.parsePacket();
+        if (packetSize == HS_RESP_PACKET_SIZE) {
+            uint8_t buffer[HS_RESP_PACKET_SIZE];
+            Udp.read(buffer, HS_RESP_PACKET_SIZE);
+
+            HandshakeRespPayload respPayload;
+            memcpy(&respPayload, buffer, HS_RESP_PAYLOAD_SIZE);
+            uint8_t receivedTag = buffer[HS_RESP_PAYLOAD_SIZE];
+
+            // Check header
+            if (strncmp(respPayload.header, HS_RESP_FLAG, strlen(HS_RESP_FLAG)) != 0) {
+                Serial.println("Handshake: invalid HS_RESP header, ignoring.");
+                return false;
+            }
+
+            // Verify HMAC with ROOT_KEY
+            uint8_t expectedHmac[SHA256_OUTPUT_LEN];
+            hmac_sha256_custom(ROOT_KEY, ROOT_KEY_LEN,
+                               (uint8_t*)&respPayload, HS_RESP_PAYLOAD_SIZE,
+                               expectedHmac);
+
+            if (receivedTag != expectedHmac[0]) {
+                Serial.println("Handshake: HMAC mismatch on HS_RESP.");
+                return false;
+            }
+
+            // Check nonce echo
+            if (respPayload.clientNonce != clientNonce) {
+                Serial.println("Handshake: clientNonce mismatch in HS_RESP.");
+                return false;
+            }
+
+            uint32_t serverNonce = respPayload.serverNonce;
+            uint8_t  agreedRole  = respPayload.agreedRole;
+
+            // Derive session key
+            derive_session_key(clientNonce, serverNonce);
+
+            remoteRole = (DeviceRole)agreedRole;
+            localRole  = ROLE_CLIENT;  // we are always the client in this code
+            handshakeComplete = true;
+
+            Serial.println("=== Handshake complete on client ===");
+            Serial.print("Client nonce: "); Serial.println(clientNonce);
+            Serial.print("Server nonce: "); Serial.println(serverNonce);
+            Serial.print("Remote role: ");
+            Serial.println(remoteRole == ROLE_SERVER ? "SERVER (time master)" : "CLIENT");
+
+            return true;
+        }
+        delay(10);
+    }
+
+    Serial.println("Handshake: timed out waiting for HS_RESP.");
+    return false;
+}
+
 void setup() {
     Serial.begin(115200);
 
-    // Convert server IP string to IPAddress object
     SERVER_IP.fromString(SERVER_IP_STR);
     
-    // Wi-Fi Connection (Open Network)
-    Serial.print("Connecting to open SSID: ");
+    Serial.print("Connecting to SSID: ");
     Serial.println(WIFI_SSID);
 
     WiFi.mode(WIFI_STA);
@@ -294,38 +430,44 @@ void setup() {
     Serial.println(SERVER_IP_STR);
     
     // Initialize UDP
-    Udp.begin(UDP_PORT); 
+    Udp.begin(UDP_PORT);
+
+    // Run handshake once at startup
+    if (!performHandshake()) {
+        Serial.println("Initial handshake failed; will retry in loop.");
+    }
 }
 
 void loop() {
-    
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("Lost Wi-Fi connection, attempting reconnect...");
-        WiFi.begin(WIFI_SSID);
+        WiFi.begin(WIFI_SSID, PASSPHRASE);
         delay(5000); 
         return;
     }
 
-    // Check if it's time to synchronize
-    if (millis() - last_sync_time_ms >= SYNC_INTERVAL_MS) {
+    // If handshake not done yet (or failed earlier), retry
+    if (!handshakeComplete) {
+        if (!performHandshake()) {
+            delay(1000);
+            return;
+        }
+    }
+
+    // Regular sync
+    if (millis() - last_sync_time_ms >= (uint64_t)SYNC_INTERVAL_MS) {
         last_sync_time_ms = millis();
         
-        // Define storage for the four timestamps
         uint64_t T1, T2 = 0, T3 = 0, T4 = 0;
         
-        // T1 = get_high_res_time()
         T1 = get_high_res_time();
         
-        // send_request()
         if (send_request(T1)) {
-            // Reply_result = receive_reply()
             if (receive_reply(current_seq_num, T1, T2, T3, T4)) {
-                // calculate_and_adjust()
                 calculate_and_adjust(T1, T2, T3, T4);
             }
         }
     }
     
-    // Yield to other tasks
     delay(10); 
 }
