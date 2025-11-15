@@ -4,6 +4,7 @@
 #include <time.h>
 #include <string.h> 
 #include "mbedtls/sha256.h"
+#include "esp_system.h"
 
 // Set up the ESP32 as a Wi-Fi Access Point instead of using an external router
 const char* AP_SSID = "ESP32_AP"; 
@@ -201,7 +202,7 @@ void handleHandshake(int packetSize) {
     }
 
     uint32_t clientNonce = initPayload.clientNonce;
-    uint32_t serverNonce = (uint32_t)(get_high_res_time() & 0xFFFFFFFF);
+    uint32_t serverNonce = esp_random();   // 32-bit random nonce
 
     // Decide role: this device is the time master (server)
     uint8_t agreedRole = (uint8_t)ROLE_SERVER;
