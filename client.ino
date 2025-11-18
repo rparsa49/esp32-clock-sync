@@ -27,14 +27,6 @@ uint8_t SESSION_KEY[SHA256_OUTPUT_LEN];
 size_t  SESSION_KEY_LEN  = 16;   // first 16 bytes of SHA-256
 bool    sessionKeyReady  = false;
 
-// Roles
-enum DeviceRole : uint8_t {
-    ROLE_CLIENT = 0,
-    ROLE_SERVER = 1
-};
-
-DeviceRole localRole  = ROLE_CLIENT;    // this device
-DeviceRole remoteRole = ROLE_SERVER;    // time master (server)
 bool handshakeComplete = false;
 
 const char REQUEST_FLAG[] = "REQUESTSYNC";
@@ -55,6 +47,27 @@ struct __attribute__((packed)) PacketPayload {
 
 const size_t PAYLOAD_SIZE = sizeof(PacketPayload);
 const size_t PACKET_SIZE = PAYLOAD_SIZE + HMAC_TAG_LEN; 
+
+// ---- Handshake packet definitions ----
+const char HS_INIT_FLAG[] = "HS_INIT";
+const char HS_RESP_FLAG[] = "HS_RESP";
+const size_t HS_HEADER_LEN = 8;   // "HS_INIT" + '\0' or "HS_RESP" + '\0'
+
+struct __attribute__((packed)) HandshakeInitPayload {
+    char header[HS_HEADER_LEN];   // "HS_INIT"
+    uint32_t clientNonce;
+};
+
+struct __attribute__((packed)) HandshakeRespPayload {
+    char header[HS_HEADER_LEN];   // "HS_RESP"
+    uint32_t clientNonce;
+    uint32_t serverNonce;
+};
+
+const size_t HS_INIT_PAYLOAD_SIZE = sizeof(HandshakeInitPayload);
+const size_t HS_RESP_PAYLOAD_SIZE = sizeof(HandshakeRespPayload);
+const size_t HS_INIT_PACKET_SIZE  = HS_INIT_PAYLOAD_SIZE + HMAC_TAG_LEN;
+const size_t HS_RESP_PACKET_SIZE  = HS_RESP_PAYLOAD_SIZE + HMAC_TAG_LEN;
 
 uint64_t get_high_res_time() {
     return esp_timer_get_time();
@@ -120,7 +133,7 @@ void derive_session_key(uint32_t clientNonce, uint32_t serverNonce) {
 
 uint8_t calculate_hmac_tag(const uint8_t* payload, size_t payloadLen) {
     uint8_t hmacResult[SHA256_OUTPUT_LEN]; 
-    hmac_sha256_custom(SHARED_SECRET_KEY, KEY_LEN, payload, payloadLen, hmacResult);
+    hmac_sha256_custom(SESSION_KEY, SESSION_KEY_LEN, payload, payloadLen, hmacResult);
     
     // Truncate to the first byte (HMAC-8) as specified
     return hmacResult[0]; 
@@ -383,20 +396,15 @@ bool performHandshake() {
             }
 
             uint32_t serverNonce = respPayload.serverNonce;
-            uint8_t  agreedRole  = respPayload.agreedRole;
 
             // Derive session key
             derive_session_key(clientNonce, serverNonce);
 
-            remoteRole = (DeviceRole)agreedRole;
-            localRole  = ROLE_CLIENT;  // we are always the client in this code
             handshakeComplete = true;
 
             Serial.println("=== Handshake complete on client ===");
             Serial.print("Client nonce: "); Serial.println(clientNonce);
             Serial.print("Server nonce: "); Serial.println(serverNonce);
-            Serial.print("Remote role: ");
-            Serial.println(remoteRole == ROLE_SERVER ? "SERVER (time master)" : "CLIENT");
 
             return true;
         }
@@ -471,3 +479,4 @@ void loop() {
     
     delay(10); 
 }
+
