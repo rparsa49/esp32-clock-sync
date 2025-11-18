@@ -27,8 +27,8 @@ bool sessionKeyReady = false;
 
 // Set up Roles
 enum DeviceRole : uint8_t {
-    ROLE_CLIENT = 0
-    ROLE_CLIENT = 1
+    ROLE_CLIENT = 0,
+    ROLE_SERVER = 1
 };
 
 DeviceRole localRole = ROLE_SERVER;
@@ -52,12 +52,12 @@ const size_t PAYLOAD_SIZE = sizeof(PacketPayload);
 const size_t PACKET_SIZE = PAYLOAD_SIZE + HMAC_TAG_LEN;
 
 struct __attribute__((packed)) HandshakeInitPayload {
-    char header[HS_HEADER_LEN];   // "HS_INIT"
+    char header[HEADER_FLAG_LEN];   // "HS_INIT"
     uint32_t clientNonce;
 };
 
 struct __attribute__((packed)) HandshakeRespPayload {
-    char header[HS_HEADER_LEN];   // "HS_RESP"
+    char header[HEADER_FLAG_LEN];   // "HS_RESP"
     uint32_t clientNonce;
     uint32_t serverNonce;
     uint8_t agreedRole;           // ROLE_SERVER or ROLE_CLIENT
@@ -138,7 +138,7 @@ void derive_session_key(uint32_t clientNonce, uint32_t serverNonce) {
 // HMAC Tag Calculator
 uint8_t calculate_hmac_tag(const uint8_t* payload, size_t payloadLen) {
     uint8_t hmacResult[SHA256_OUTPUT_LEN]; 
-    hmac_sha256_custom(SHARED_SECRET_KEY, KEY_LEN, payload, payloadLen, hmacResult);
+    hmac_sha256_custom(SESSION_KEY, SESSION_KEY_LEN, payload, payloadLen, hmacResult);
     
     // Truncate to the first byte (HMAC-8) as specified
     return hmacResult[0]; 
@@ -365,5 +365,3 @@ void loop() {
 
     delay(10); 
 }
-
-
