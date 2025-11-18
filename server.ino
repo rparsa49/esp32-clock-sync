@@ -1,4 +1,3 @@
-
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <time.h>
@@ -9,6 +8,7 @@
 // Set up the ESP32 as a Wi-Fi Access Point instead of using an external router
 const char* AP_SSID = "ESP32_AP"; 
 const char* AP_PASS = "12345678"; 
+const size_t HS_HEADER_LEN = 8;
 
 const int UDP_PORT = 12345;
 
@@ -25,13 +25,6 @@ uint8_t SESSION_KEY[SHA256_OUTPUT_LEN];
 size_t SESSION_KEY_LEN = 16;
 bool sessionKeyReady = false;
 
-// Set up Roles
-enum DeviceRole : uint8_t {
-    ROLE_CLIENT = 0,
-    ROLE_SERVER = 1
-};
-
-DeviceRole localRole = ROLE_SERVER;
 bool handshakeComplete = false;
 
 // Sync packet definitions
@@ -52,15 +45,14 @@ const size_t PAYLOAD_SIZE = sizeof(PacketPayload);
 const size_t PACKET_SIZE = PAYLOAD_SIZE + HMAC_TAG_LEN;
 
 struct __attribute__((packed)) HandshakeInitPayload {
-    char header[HEADER_FLAG_LEN];   // "HS_INIT"
+    char header[HS_HEADER_LEN];   // "HS_INIT"
     uint32_t clientNonce;
 };
 
 struct __attribute__((packed)) HandshakeRespPayload {
-    char header[HEADER_FLAG_LEN];   // "HS_RESP"
+    char header[HS_HEADER_LEN];   // "HS_RESP"
     uint32_t clientNonce;
     uint32_t serverNonce;
-    uint8_t agreedRole;           // ROLE_SERVER or ROLE_CLIENT
 };
 
 const size_t HS_INIT_PAYLOAD_SIZE = sizeof(HandshakeInitPayload);
@@ -71,7 +63,6 @@ const size_t HS_RESP_PACKET_SIZE  = HS_RESP_PAYLOAD_SIZE + HMAC_TAG_LEN;
 // Handshake packet definitions
 const char HS_INIT_FLAG[] = "HS_INIT";
 const char HS_RESP_FLAG[] = "HS_RESP";
-const size_t HS_HEADER_LEN = 8;
 
 // Time helper
 uint64_t get_high_res_time() {
@@ -165,7 +156,7 @@ bool validate_packet(const uint8_t* packet) {
 void handleHandshake(int packetSize) {
     IPAddress remoteIP = Udp.remoteIP();
     int remotePort = Udp.remotePort();
-
+    Serial.println("Packet size is: " + packetSize);
     if (packetSize != HS_INIT_PACKET_SIZE) {
         // Drain and ignore unexpected packets during handshake phase
         uint8_t trash[256];
@@ -204,10 +195,6 @@ void handleHandshake(int packetSize) {
     uint32_t clientNonce = initPayload.clientNonce;
     uint32_t serverNonce = esp_random();   // 32-bit random nonce
 
-    // Decide role: this device is the time master (server)
-    uint8_t agreedRole = (uint8_t)ROLE_SERVER;
-    localRole = ROLE_SERVER;
-
     // Derive per-session HMAC key
     derive_session_key(clientNonce, serverNonce);
 
@@ -217,7 +204,6 @@ void handleHandshake(int packetSize) {
     memcpy(respPayload.header, HS_RESP_FLAG, strlen(HS_RESP_FLAG));
     respPayload.clientNonce = clientNonce;
     respPayload.serverNonce = serverNonce;
-    respPayload.agreedRole  = agreedRole;
 
     uint8_t fullResp[HS_RESP_PACKET_SIZE];
     memcpy(fullResp, &respPayload, HS_RESP_PAYLOAD_SIZE);
@@ -238,7 +224,6 @@ void handleHandshake(int packetSize) {
     Serial.println("=== Handshake complete ===");
     Serial.print("Client nonce: "); Serial.println(clientNonce);
     Serial.print("Server nonce: "); Serial.println(serverNonce);
-    Serial.print("Agreed role : "); Serial.println(agreedRole == ROLE_SERVER ? "SERVER (time master)" : "CLIENT");
 }
 
 // Set up
