@@ -22,9 +22,9 @@ const size_t HMAC_TAG_LEN = 1;
 const size_t SHA256_OUTPUT_LEN = 32;
 const size_t SHA256_BLOCK_SIZE  = 64;
 
-// Session key (derived from handshake nonces)
+// Session key
 uint8_t SESSION_KEY[SHA256_OUTPUT_LEN];
-size_t  SESSION_KEY_LEN  = 16;   // first 16 bytes of SHA-256
+size_t  SESSION_KEY_LEN  = 16;
 bool    sessionKeyReady  = false;
 
 bool handshakeComplete = false;
@@ -48,18 +48,18 @@ struct __attribute__((packed)) PacketPayload {
 const size_t PAYLOAD_SIZE = sizeof(PacketPayload);
 const size_t PACKET_SIZE = PAYLOAD_SIZE + HMAC_TAG_LEN; 
 
-// ---- Handshake packet definitions ----
+// Handshake packet definitions
 const char HS_INIT_FLAG[] = "HS_INIT";
 const char HS_RESP_FLAG[] = "HS_RESP";
-const size_t HS_HEADER_LEN = 8;   // "HS_INIT" + '\0' or "HS_RESP" + '\0'
+const size_t HS_HEADER_LEN = 8; 
 
 struct __attribute__((packed)) HandshakeInitPayload {
-    char header[HS_HEADER_LEN];   // "HS_INIT"
+    char header[HS_HEADER_LEN];
     uint32_t clientNonce;
 };
 
 struct __attribute__((packed)) HandshakeRespPayload {
-    char header[HS_HEADER_LEN];   // "HS_RESP"
+    char header[HS_HEADER_LEN];
     uint32_t clientNonce;
     uint32_t serverNonce;
 };
@@ -110,7 +110,6 @@ void hmac_sha256_custom(const uint8_t* key, size_t keyLen, const uint8_t* msg, s
 
 // Session key derivation
 void derive_session_key(uint32_t clientNonce, uint32_t serverNonce) {
-    // material = ROOT_KEY || clientNonce || serverNonce
     uint8_t material[ROOT_KEY_LEN + sizeof(clientNonce) + sizeof(serverNonce)];
     memcpy(material, ROOT_KEY, ROOT_KEY_LEN);
     memcpy(material + ROOT_KEY_LEN, &clientNonce, sizeof(clientNonce));
@@ -135,7 +134,7 @@ uint8_t calculate_hmac_tag(const uint8_t* payload, size_t payloadLen) {
     uint8_t hmacResult[SHA256_OUTPUT_LEN]; 
     hmac_sha256_custom(SESSION_KEY, SESSION_KEY_LEN, payload, payloadLen, hmacResult);
     
-    // Truncate to the first byte (HMAC-8) as specified
+    // Truncate to the first byte 
     return hmacResult[0]; 
 }
 
@@ -162,7 +161,7 @@ void update_local_clock(int64_t offset_us) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
 
-    // Convert microseconds offset to seconds and microseconds component
+    // Convert microseconds offset to seconds and microseconds
     long seconds = offset_us / 1000000;
     long microseconds = offset_us % 1000000;
 
@@ -182,23 +181,18 @@ void update_local_clock(int64_t offset_us) {
     // Set the new time
     settimeofday(&current_time, NULL);
     Serial.print("Clock Adjusted by: ");
-    Serial.print((float)offset_us / 1000.0, 3); // Print in milliseconds
+    Serial.print((float)offset_us / 1000.0, 3);
     Serial.println(" ms");
 }
 
 void calculate_and_adjust(uint64_t T1, uint64_t T2, uint64_t T3, uint64_t T4) {
-    // T_diff = T4 - T1
     int64_t T_diff = (int64_t)T4 - (int64_t)T1;
 
-    // T_server_proc = T3 - T2
     int64_t T_server_proc = (int64_t)T3 - (int64_t)T2;
 
-    // 1. Calculate Round Trip Delay (Delta): (T4-T1)-(T3-T2)
     int64_t delay_us = T_diff - T_server_proc;
 
-    // (T2-T1) is Server's clock minus Client's clock, adjusted by path delay
     int64_t term1 = (int64_t)T2 - (int64_t)T1;
-    // (T3-T4) is Server's clock minus Client's clock, adjusted by path delay
     int64_t term2 = (int64_t)T3 - (int64_t)T4;
     
     int64_t offset_us = (term1 + term2) / 2;
@@ -218,11 +212,12 @@ void calculate_and_adjust(uint64_t T1, uint64_t T2, uint64_t T3, uint64_t T4) {
 }
 
 bool send_request(uint64_t T1) {
-    current_seq_num++; // Increment sequence number
+    // Increment sequence number
+    current_seq_num++;
     
     PacketPayload requestPayload;
     
-    // Populate header and sequence number
+    // Add header and sequence number
     memcpy(requestPayload.header, REQUEST_FLAG, HEADER_FLAG_LEN);
     requestPayload.seq_num = current_seq_num;
     
@@ -230,7 +225,7 @@ bool send_request(uint64_t T1) {
     requestPayload.T2 = 0;
     requestPayload.T3 = 0; 
     
-    // Calculate HMAC for the *outgoing* payload
+    // Calculate HMAC for the outgoing payload
     uint8_t hmac_Tag = calculate_hmac_tag((uint8_t*)&requestPayload, PAYLOAD_SIZE);
 
     // Construct the final request packet
@@ -238,14 +233,14 @@ bool send_request(uint64_t T1) {
     memcpy(fullRequest, &requestPayload, PAYLOAD_SIZE);
     fullRequest[PAYLOAD_SIZE] = hmac_Tag;
     
-    // 1. Begin Packet - Checks if connection/address is valid (returns 1 on success, 0 on failure)
+    // Checks if connection/address is valid
     int begin_status = Udp.beginPacket(SERVER_IP, UDP_PORT);
     if (begin_status == 0) {
         Serial.println("[CRITICAL ERROR] UDP: Udp.beginPacket failed. Check target IP and Wi-Fi status.");
         return false;
     }
     
-    // 2. Write Data - Check bytes written
+    // Write Data
     size_t bytesWritten = Udp.write(fullRequest, PACKET_SIZE);
     if (bytesWritten != PACKET_SIZE) {
         Serial.print("[CRITICAL ERROR] UDP: Udp.write failed. Expected ");
@@ -254,7 +249,7 @@ bool send_request(uint64_t T1) {
         Serial.println(bytesWritten);
     }
 
-    // 3. End Packet - Checks if transmission succeeded (returns 1 on success, 0 on failure)
+    // Checks if transmission succeeded
     int end_status = Udp.endPacket();
 
     if (end_status == 1 && bytesWritten == PACKET_SIZE) {
@@ -279,7 +274,7 @@ bool receive_reply(uint32_t expected_seq, uint64_t& T1_out, uint64_t& T2_out, ui
 
     while (millis() - start_time < UDP_TIMEOUT_MS) {
         if (Udp.parsePacket() == PACKET_SIZE) {
-            // Record T4: Client's time of arrival
+            // Client's time of arrival
             T4_out = get_high_res_time(); 
             
             // Read the full packet
@@ -304,7 +299,7 @@ bool receive_reply(uint32_t expected_seq, uint64_t& T1_out, uint64_t& T2_out, ui
                 return false;
             }
             
-            // Security Check (HMAC)
+            // Security Check
             if (validate_packet(receivedPacket)) {
                 // If valid, store the timestamps for calculation
                 T1_out = replyPayload.T1;
@@ -329,7 +324,7 @@ bool receive_reply(uint32_t expected_seq, uint64_t& T1_out, uint64_t& T2_out, ui
 bool performHandshake() {
     Serial.println("Starting handshake (HS_INIT -> HS_RESP)...");
 
-    uint32_t clientNonce = esp_random();  // 32-bit random value
+    uint32_t clientNonce = esp_random();
 
     // Build HS_INIT payload
     HandshakeInitPayload initPayload;
@@ -454,7 +449,7 @@ void loop() {
         return;
     }
 
-    // If handshake not done yet (or failed earlier), retry
+    // If handshake not done yet, retry
     if (!handshakeComplete) {
         if (!performHandshake()) {
             delay(1000);
