@@ -270,21 +270,18 @@ void loop() {
     }
 
     if (!handshakeComplete) {
-        // --- First phase: handle handshake ---
         handleHandshake(packetSize);
         return;
     }
 
-    // --- Second phase: normal sync packets ---
-    // Record T2: Server's time of arrival (before heavy processing)
+    // Record T2: Server's time of arrival
     uint64_t T2 = get_high_res_time();
     IPAddress remoteIP = Udp.remoteIP();
     int remotePort = Udp.remotePort();
 
-    // Read the full sync packet (Payload + Tag)
+    // Read the full sync packet 
     uint8_t receivedPacket[PACKET_SIZE];
     if (packetSize != PACKET_SIZE) {
-        // Drain and ignore if size is wrong
         uint8_t trash[256];
         while (Udp.available()) {
             Udp.read(trash, sizeof(trash));
@@ -300,7 +297,6 @@ void loop() {
     PacketPayload requestPayload;
     memcpy(&requestPayload, receivedPacket, PAYLOAD_SIZE);
     
-    // --- Flag Check ---
     if (strcmp(requestPayload.header, REQUEST_FLAG) != 0) {
         Serial.print("ERROR: Invalid Header Flag from ");
         Serial.print(remoteIP);
@@ -308,9 +304,7 @@ void loop() {
         return;
     }
     
-    // --- Security Check ---
     if (validate_packet(receivedPacket)) {
-        // T3 = get_high_res_time(): Server's time of departure
         uint64_t T3 = get_high_res_time();
         
         // Reply payload construction
@@ -321,11 +315,11 @@ void loop() {
         replyPayload.seq_num = requestPayload.seq_num + 1;
         
         // Fill timestamps
-        replyPayload.T1 = requestPayload.T1; // Original T1 from client
-        replyPayload.T2 = T2;               // Server's T2 (Arrival)
-        replyPayload.T3 = T3;               // Server's T3 (Departure)
+        replyPayload.T1 = requestPayload.T1; 
+        replyPayload.T2 = T2;               
+        replyPayload.T3 = T3;               
 
-        // Calculate HMAC for the reply payload (now using SESSION_KEY)
+        // Calculate HMAC for the reply payload 
         uint8_t hmac_Tag = calculate_hmac_tag((uint8_t*)&replyPayload, PAYLOAD_SIZE);
 
         // Construct the final reply packet
@@ -345,7 +339,7 @@ void loop() {
         Serial.print("T3 (Departure us): "); Serial.println((long)T3);
 
     } else {
-        // Discarding packet due to bad HMAC (logged inside validate_packet)
+        // Discarding packet due to incorrect HMAC 
     }
 
     delay(10); 
