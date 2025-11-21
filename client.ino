@@ -1,3 +1,8 @@
+/* Some parts of our script were drafted and refined with assistance from GPT-5 Thinking.
+    These included performing the handshake, .... 
+    We then made our own improvements and justifications based on testing and observation. 
+*/
+
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <time.h>
