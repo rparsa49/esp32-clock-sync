@@ -6,6 +6,7 @@
 #include "mbedtls/sha256.h"
 #include "esp_system.h"
 
+// Wi-Fi credentials of the server ESP32's access point
 const char* WIFI_SSID = "ESP32_AP"; 
 const char* PASSPHRASE = "12345678";
 const char* SERVER_IP_STR = "192.168.4.1"; 
@@ -15,6 +16,7 @@ const long SYNC_INTERVAL_MS = 10000;
 const int UDP_TIMEOUT_MS = 10;
 const int  HS_TIMEOUT_MS    = 1000;
 
+// Root (pre-shared) key used for the handshake
 const uint8_t ROOT_KEY[]   = "cosc160"; 
 const size_t  ROOT_KEY_LEN = 7;
 
@@ -22,13 +24,14 @@ const size_t HMAC_TAG_LEN = 1;
 const size_t SHA256_OUTPUT_LEN = 32;
 const size_t SHA256_BLOCK_SIZE  = 64;
 
-// Session key
+// Session key derived during handshake
 uint8_t SESSION_KEY[SHA256_OUTPUT_LEN];
-size_t  SESSION_KEY_LEN  = 16;
-bool    sessionKeyReady  = false;
+size_t SESSION_KEY_LEN  = 16;
+bool sessionKeyReady  = false;
 
 bool handshakeComplete = false;
 
+// Sync packet definitions
 const char REQUEST_FLAG[] = "REQUESTSYNC";
 const size_t HEADER_FLAG_LEN = 12;
 
@@ -69,17 +72,18 @@ const size_t HS_RESP_PAYLOAD_SIZE = sizeof(HandshakeRespPayload);
 const size_t HS_INIT_PACKET_SIZE  = HS_INIT_PAYLOAD_SIZE + HMAC_TAG_LEN;
 const size_t HS_RESP_PACKET_SIZE  = HS_RESP_PAYLOAD_SIZE + HMAC_TAG_LEN;
 
+// Time helper
 uint64_t get_high_res_time() {
     return esp_timer_get_time();
 }
 
+// HMAC helper
 void hmac_sha256_custom(const uint8_t* key, size_t keyLen, const uint8_t* msg, size_t msgLen, uint8_t* hmacResult) {
     uint8_t K_ipad[SHA256_BLOCK_SIZE];
     uint8_t K_opad[SHA256_BLOCK_SIZE];
     uint8_t innerHash[SHA256_OUTPUT_LEN];
     mbedtls_sha256_context ctx;
 
-    // Prepare Padded Keys K_ipad and K_opad
     memset(K_ipad, 0, SHA256_BLOCK_SIZE);
     memset(K_opad, 0, SHA256_BLOCK_SIZE);
     
@@ -130,14 +134,16 @@ void derive_session_key(uint32_t clientNonce, uint32_t serverNonce) {
     Serial.println(SESSION_KEY[0], HEX);
 }
 
+// HMAC Tag Calculator
 uint8_t calculate_hmac_tag(const uint8_t* payload, size_t payloadLen) {
     uint8_t hmacResult[SHA256_OUTPUT_LEN]; 
     hmac_sha256_custom(SESSION_KEY, SESSION_KEY_LEN, payload, payloadLen, hmacResult);
     
-    // Truncate to the first byte 
+    // Truncate to the first byte (HMAC-8) as specified 
     return hmacResult[0]; 
 }
 
+// Packet validation for sync packets
 bool validate_packet(const uint8_t* packet) {
     // The payload is the first 40 bytes
     const uint8_t* payload = packet; 
@@ -156,6 +162,7 @@ bool validate_packet(const uint8_t* packet) {
     }
 }
 
+// Adjust the local clock by a signed offset (in microseconds)
 void update_local_clock(int64_t offset_us) {
     // Get current time
     struct timeval current_time;
@@ -185,6 +192,7 @@ void update_local_clock(int64_t offset_us) {
     Serial.println(" ms");
 }
 
+// Compute network delay and clock offset from a 4-timestamp (T1–T4) synchronization exchange and, if needed, adjust the local clock
 void calculate_and_adjust(uint64_t T1, uint64_t T2, uint64_t T3, uint64_t T4) {
     int64_t T_diff = (int64_t)T4 - (int64_t)T1;
 
