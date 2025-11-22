@@ -1,5 +1,5 @@
 /* Some parts of our script were drafted and refined with assistance from GPT-5 Thinking.
-    These included performing the handshake and making the HMAC 
+    These included performing the HS_RESP message format, server nonce handling, key derivation, and making the HMAC. 
     We then made our own improvements and justifications based on testing and observation. 
 */
 
